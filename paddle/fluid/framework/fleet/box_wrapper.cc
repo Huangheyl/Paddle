@@ -60,18 +60,24 @@ void BasicAucCalculator::add_unlock_data(double pred, int label) {
 
 void BasicAucCalculator::add_data(const float* d_pred, const int64_t* d_label,
                                   int batch_size,
-                                  const paddle::platform::Place& place) {
+                                  const paddle::platform::Place& place, bool copy_gpu) {
   if (_mode_collect_in_gpu) {
+    VLOG(0) << "BBBBBBBBBBBBBBB begin add data to calculator";
     cuda_add_data(place, d_label, d_pred, batch_size);
   } else {
+    VLOG(0) << "AAAAAAAAAAAAAAA begin add data to calculator";
     thread_local std::vector<float> h_pred;
     thread_local std::vector<int64_t> h_label;
     h_pred.resize(batch_size);
     h_label.resize(batch_size);
     cudaMemcpy(h_pred.data(), d_pred, sizeof(float) * batch_size,
                cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_label.data(), d_label, sizeof(int64_t) * batch_size,
+    if (copy_gpu) {
+      cudaMemcpy(h_label.data(), d_label, sizeof(int64_t) * batch_size,
                cudaMemcpyDeviceToHost);
+    } else {
+      memcpy(h_label.data(), d_label, sizeof(int64_t) * batch_size);
+    }
 
     std::lock_guard<std::mutex> lock(_table_mutex);
     for (int i = 0; i < batch_size; ++i) {

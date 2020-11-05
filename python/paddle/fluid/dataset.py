@@ -92,6 +92,9 @@ class DatasetBase(object):
         """
         self.proto_desc.pipe_command = pipe_command
 
+    def set_pair_offset(self, pair_offset):
+        self.proto_desc.pair_offset = pair_offset
+
     def set_rank_offset(self, rank_offset):
         """
         Set rank_offset for merge_pv. It set the message of Pv.

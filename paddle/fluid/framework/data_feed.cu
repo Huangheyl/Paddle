@@ -270,5 +270,114 @@ void SlotPaddleBoxDataFeed::CopyRankOffset(int *dest, const int ins_num,
   cudaStreamSynchronize(stream);
 }
 
+__global__ void CopyPairOffsetKernel(int *mat, const int ins_num,
+                                     const int pv_num, const int max_rank,
+                                     const int *ad_rank, const int *cmatch,
+                                     const int *pv_offset, const int *ad_label, const int cols) {
+  CUDA_KERNEL_LOOP(ins_idx, pv_num) {
+    int pv_ad_num = pv_offset[ins_idx + 1] - pv_offset[ins_idx];
+    int pv_ad_index = pv_offset[ins_idx];
+
+    int clk1 = -1;
+    int clk2 = -1;
+    int clk3 = -1;
+    int ad_index1 = -1;
+    int ad_index2 = -1;
+    int ad_index3 = -1;
+
+    for (int j = 0; j < pv_ad_num; ++j) {
+      int rank = -1;
+      int ins_cmatch = cmatch[pv_ad_index + j];
+      int label = ad_label[pv_ad_index + j];
+
+      if ((ins_cmatch == 222 || ins_cmatch == 223) &&
+          ad_rank[pv_ad_index + j] <= max_rank &&
+          ad_rank[pv_ad_index + j] != 0) {
+        rank = ad_rank[pv_ad_index + j];
+      }
+
+      if (!(rank <= max_rank)) {
+        printf("check rank[%d] <= max_rank[%d] failed, ins_idx[%d] j[%d]\n",
+               rank, max_rank, ins_idx, j);
+        asm("trap;");
+      }
+
+      if (rank == 1 && clk1 == -1) {
+        clk1 = label;
+        ad_index1 = pv_ad_index + j;
+      }
+      if (rank == 2 && clk2 == -1) {
+        clk2 = label;
+        ad_index2 = pv_ad_index + j;
+      }
+      if (rank == 3 && clk3 == -1) {
+        clk3 = label;
+        ad_index3 = pv_ad_index + j;
+      }
+    }
+  
+    int ins_idx = 0;
+    if (clk1 != -1 && clk2 != -1) {
+      if (clk1 > clk2) {  // not reverse neg
+        mat[(pv_ad_index + ins_idx) * cols] = ad_index1;
+        mat[(pv_ad_index + ins_idx) * cols + 1] = ad_index2;
+        mat[(pv_ad_index + ins_idx) * cols + 2] = 0;
+        ins_idx += 1;
+      }
+      if (clk1 < clk2) {  // reverse pos
+        mat[(pv_ad_index + ins_idx) * cols] = ad_index1;
+        mat[(pv_ad_index + ins_idx) * cols + 1] = ad_index2;
+        mat[(pv_ad_index + ins_idx) * cols + 2] = 1;
+        ins_idx += 1;
+      }
+    }
+
+    if (clk1 != -1 && clk3 != -1) {
+      if (clk1 > clk3) {  // not reverse neg
+        mat[(pv_ad_index + ins_idx) * cols] = ad_index1;
+        mat[(pv_ad_index + ins_idx) * cols + 1] = ad_index3;
+        mat[(pv_ad_index + ins_idx) * cols + 2] = 0;
+        ins_idx += 1;
+      }
+      if (clk1 < clk3) {  // reverse pos
+        mat[(pv_ad_index + ins_idx) * cols] = ad_index1;
+        mat[(pv_ad_index + ins_idx) * cols + 1] = ad_index3;
+        mat[(pv_ad_index + ins_idx) * cols + 2] = 1;
+        ins_idx += 1;
+      }
+    }
+    if (clk2 != -1 && clk3 != -1) {
+      if (clk2 > clk3) {  // not reverse neg
+        mat[(pv_ad_index + ins_idx) * cols] = ad_index2;
+        mat[(pv_ad_index + ins_idx) * cols + 1] = ad_index3;
+        mat[(pv_ad_index + ins_idx) * cols + 2] = 0;
+        ins_idx += 1;
+      }
+      if (clk2 < clk3) {  // reverse pos
+        mat[(pv_ad_index + ins_idx) * cols] = ad_index2;
+        mat[(pv_ad_index + ins_idx) * cols + 1] = ad_index3;
+        mat[(pv_ad_index + ins_idx) * cols + 2] = 1;
+        ins_idx += 1;
+      }
+    }
+  }
+}
+
+
+void SlotPaddleBoxDataFeed::CopyPairOffset(int *dest, const int ins_num,
+                                           const int pv_num, const int max_rank,
+                                           const int *ranks, const int *cmatchs,
+                                           const int *ad_offsets, const int *ad_label,
+                                           const int cols) {
+  auto stream = dynamic_cast<platform::CUDADeviceContext *>(
+                    platform::DeviceContextPool::Instance().Get(
+                        boost::get<platform::CUDAPlace>(this->place_)))
+                    ->stream();
+  cudaMemsetAsync(dest, -1, sizeof(int) * ins_num * cols, stream);
+  CopyPairOffsetKernel<<<GET_BLOCKS(pv_num), CUDA_NUM_THREADS, 0, stream>>>(
+      dest, ins_num, pv_num, max_rank, ranks, cmatchs, ad_offsets, ad_label, cols);
+  cudaStreamSynchronize(stream);
+}
+
 }  // namespace framework
 }  // namespace paddle

@@ -55,7 +55,8 @@ class FilterByInstagOp : public framework::OperatorWithKernel {
   framework::OpKernelType GetExpectedKernelType(
       const framework::ExecutionContext& ctx) const override {
     auto data_type = OperatorWithKernel::IndicateVarDataType(ctx, "Ins");
-    return framework::OpKernelType(data_type, ctx.device_context());
+    //return framework::OpKernelType(data_type, ctx.device_context());
+    return framework::OpKernelType(data_type, platform::CPUPlace());
   }
 };
 

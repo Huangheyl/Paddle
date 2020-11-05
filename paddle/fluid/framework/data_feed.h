@@ -255,6 +255,7 @@ class DataFeed {
   std::vector<LoDTensor*> feed_vec_;
 
   LoDTensor* rank_offset_;
+  LoDTensor* pair_offset_;
 
   // the batch size defined by user
   int default_batch_size_;
@@ -1112,6 +1113,7 @@ struct BatchCPUValue {
   HostBuffer<int> h_rank;
   HostBuffer<int> h_cmatch;
   HostBuffer<int> h_ad_offset;
+  HostBuffer<int> h_ad_click;
 };
 
 struct BatchGPUValue {
@@ -1126,6 +1128,7 @@ struct BatchGPUValue {
   CudaBuffer<int> d_rank;
   CudaBuffer<int> d_cmatch;
   CudaBuffer<int> d_ad_offset;
+  CudaBuffer<int> d_ad_click;
 };
 
 class SlotPaddleBoxDataFeed;
@@ -1135,8 +1138,8 @@ class MiniBatchGpuPack {
                    const std::vector<UsedSlotInfo>& infos);
   ~MiniBatchGpuPack();
   void reset(const paddle::platform::Place& place);
-  void pack_pvinstance(const SlotPvInstance* pv_ins, int num);
-  void pack_instance(const SlotRecord* ins_vec, int num);
+  void pack_pvinstance(const SlotPvInstance* pv_ins, int num, int click_pos=0);
+  void pack_instance(const SlotRecord* ins_vec, int num, int click_pos=0);
   int ins_num() { return ins_num_; }
   int pv_num() { return pv_num_; }
   BatchGPUValue& value() { return value_; }
@@ -1194,7 +1197,7 @@ class MiniBatchGpuPack {
 
  private:
   void transfer_to_gpu(void);
-  void pack_all_data(const SlotRecord* ins_vec, int num);
+  void pack_all_data(const SlotRecord* ins_vec, int num, int click_pos=0);
   void pack_uint64_data(const SlotRecord* ins_vec, int num);
   void pack_float_data(const SlotRecord* ins_vec, int num);
 
@@ -1364,6 +1367,7 @@ class SlotPaddleBoxDataFeed : public DataFeed {
   void PutToFeedSlotVec(const SlotRecord* recs, int num);
   void BuildSlotBatchGPU(const int ins_num);
   void GetRankOffsetGPU(const int pv_num, const int ins_num);
+  void GetPairOffsetGPU(const int pv_num, const int ins_num);
   void GetRankOffset(const SlotPvInstance* pv_vec, int pv_num, int ins_number);
   bool ParseOneInstance(const std::string& line, SlotRecord* rec);
 
@@ -1372,6 +1376,9 @@ class SlotPaddleBoxDataFeed : public DataFeed {
   void CopyRankOffset(int* dest, const int ins_num, const int pv_num,
                       const int max_rank, const int* ranks, const int* cmatchs,
                       const int* ad_offsets, const int cols);
+  void CopyPairOffset(int* dest, const int ins_num, const int pv_num,
+                      const int max_rank, const int* ranks, const int* cmatchs,
+                      const int* ad_offsets, const int* ad_click, const int cols);
   void FillSlotValueOffset(const int ins_num, const int used_slot_num,
                            size_t* slot_value_offsets,
                            const int* uint64_offsets,
@@ -1405,10 +1412,12 @@ class SlotPaddleBoxDataFeed : public DataFeed {
   size_t float_total_dims_size_ = 0;
 
   std::string rank_offset_name_;
+  std::string pair_offset_name_;
   int pv_batch_size_ = 0;
   int use_slot_size_ = 0;
   int float_use_slot_size_ = 0;
   int uint64_use_slot_size_ = 0;
+  int click_pos_ = 0;
 
 #if defined(PADDLE_WITH_CUDA) && defined(_LINUX)
   MiniBatchGpuPack* pack_ = nullptr;

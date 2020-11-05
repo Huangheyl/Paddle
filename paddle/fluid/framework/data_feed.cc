@@ -2001,6 +2001,11 @@ void SlotPaddleBoxDataFeed::Init(const DataFeedDesc& data_feed_desc) {
       if (info.type[0] == 'u') {
         info.slot_value_idx = uint64_use_slot_size_;
         all_slot.slot_value_idx = uint64_use_slot_size_;
+        if (info.slot == "click") {
+          click_pos_ = info.slot_value_idx;       
+          //printf("click pos: %d\n", click_pos_);
+          //VLOG(0) << "AAAAAAAAAAAAAAAAAAAAAAAAAAAAA click_pos: " << click_pos_;
+        }
         ++uint64_use_slot_size_;
       } else if (info.type[0] == 'f') {
         info.slot_value_idx = float_use_slot_size_;
@@ -2052,6 +2057,7 @@ void SlotPaddleBoxDataFeed::Init(const DataFeedDesc& data_feed_desc) {
   input_type_ = data_feed_desc.input_type();
 
   rank_offset_name_ = data_feed_desc.rank_offset();
+  pair_offset_name_ = data_feed_desc.pair_offset();
   pv_batch_size_ = data_feed_desc.pv_batch_size();
 
   // fprintf(stdout, "rank_offset_name: [%s]\n", rank_offset_name_.c_str());
@@ -2099,17 +2105,18 @@ bool SlotPaddleBoxDataFeed::Start() {
   return true;
 }
 int SlotPaddleBoxDataFeed::Next() {
-  int phase = GetCurrentPhase();  // join: 1, update: 0
+  //int phase = GetCurrentPhase();  // join: 1, update: 0
   this->CheckStart();
   if (offset_index_ >= static_cast<int>(batch_offsets_.size())) {
     return 0;
   }
   auto& batch = batch_offsets_[offset_index_++];
-  if (enable_pv_merge_ && phase == 1) {
+  if (enable_pv_merge_) {
     // join phase : output_pv_channel to consume_pv_channel
     this->batch_size_ = batch.second;
     if (this->batch_size_ != 0) {
       batch_timer_.Resume();
+      //VLOG(0) << "AAAAAAAAAAAAAAAAA  enable pv merge";
       PutToFeedPvVec(&pv_ins_[batch.first], this->batch_size_);
       batch_timer_.Pause();
     } else {
@@ -2117,6 +2124,7 @@ int SlotPaddleBoxDataFeed::Next() {
     }
     return this->batch_size_;
   } else {
+    //VLOG(0) << "AAAAAAAAAAAAAAAAA  not enable pv merge";
     this->batch_size_ = batch.second;
     batch_timer_.Resume();
     PutToFeedSlotVec(&records_[batch.first], this->batch_size_);
@@ -2125,7 +2133,7 @@ int SlotPaddleBoxDataFeed::Next() {
   }
 }
 bool SlotPaddleBoxDataFeed::EnablePvMerge(void) {
-  return (enable_pv_merge_ && GetCurrentPhase() == 1);
+  return enable_pv_merge_;
 }
 int SlotPaddleBoxDataFeed::GetPackInstance(SlotRecord** ins) {
   if (offset_index_ >= static_cast<int>(batch_offsets_.size())) {
@@ -2150,19 +2158,23 @@ void SlotPaddleBoxDataFeed::AssignFeedVar(const Scope& scope) {
         scope.FindVar(used_slots_info_[i].slot)->GetMutable<LoDTensor>();
   }
   // set rank offset memory
-  int phase = GetCurrentPhase();  // join: 1, update: 0
-  if (enable_pv_merge_ && phase == 1) {
+  //int phase = GetCurrentPhase();  // join: 1, update: 0
+  //VLOG(0) << "AAAAAAAAAAAA begin assign feed val";
+  if (enable_pv_merge_) {
     rank_offset_ = scope.FindVar(rank_offset_name_)->GetMutable<LoDTensor>();
+    pair_offset_ = scope.FindVar("pair_offset")->GetMutable<LoDTensor>();
   }
 }
 void SlotPaddleBoxDataFeed::PutToFeedPvVec(const SlotPvInstance* pvs, int num) {
 #if defined(PADDLE_WITH_CUDA) && defined(_LINUX)
   paddle::platform::SetDeviceId(
       boost::get<platform::CUDAPlace>(place_).GetDeviceId());
-  pack_->pack_pvinstance(pvs, num);
+  pack_->pack_pvinstance(pvs, num, click_pos_);
   int ins_num = pack_->ins_num();
   int pv_num = pack_->pv_num();
   GetRankOffsetGPU(pv_num, ins_num);
+  //VLOG(0) << "AAAAAAAAAAAA pair_offset get pairoffset gpu  begin assign feed val";
+  GetPairOffsetGPU(pv_num, ins_num);
   BuildSlotBatchGPU(ins_num);
 #else
   int ins_number = 0;
@@ -2246,7 +2258,7 @@ void SlotPaddleBoxDataFeed::PutToFeedSlotVec(const SlotRecord* ins_vec,
 #if defined(PADDLE_WITH_CUDA) && defined(_LINUX)
   paddle::platform::SetDeviceId(
       boost::get<platform::CUDAPlace>(place_).GetDeviceId());
-  pack_->pack_instance(ins_vec, num);
+  pack_->pack_instance(ins_vec, num, click_pos_);
   BuildSlotBatchGPU(pack_->ins_num());
 #else
   for (int j = 0; j < use_slot_size_; ++j) {
@@ -2471,6 +2483,22 @@ void SlotPaddleBoxDataFeed::GetRankOffsetGPU(const int pv_num,
                  (const int*)value.d_ad_offset.data(), col);
 #endif
 }
+void SlotPaddleBoxDataFeed::GetPairOffsetGPU(const int pv_num,
+                                             const int ins_num) {
+  //VLOG(0) << "AAAAAAAAAAAA begin get pair offset";
+#if defined(PADDLE_WITH_CUDA) && defined(_LINUX)
+  int max_rank = 3;  // the value is setting
+  int col = 3;
+  auto& value = pack_->value();
+  int* tensor_ptr =
+      pair_offset_->mutable_data<int>({ins_num, col}, this->place_);
+  CopyPairOffset(tensor_ptr, ins_num, pv_num, max_rank,
+                 (const int*)value.d_rank.data(),
+                 (const int*)value.d_cmatch.data(),
+                 (const int*)value.d_ad_offset.data(),
+                 (const int*)value.d_ad_click.data(), col);
+#endif
+}
 void SlotPaddleBoxDataFeed::GetRankOffset(const SlotPvInstance* pv_vec,
                                           int pv_num, int ins_number) {
   int index = 0;
@@ -2616,6 +2644,7 @@ void SlotPaddleBoxDataFeed::LoadIntoMemoryByLib(void) {
   while (this->PickOneFile(&filename)) {
     VLOG(3) << "PickOneFile, filename=" << filename
             << ", thread_id=" << thread_id_;
+    //printf("PickOneFile, filename=%s\n", filename.c_str());
     std::vector<SlotRecord> record_vec;
     platform::Timer timeline;
     timeline.Start();
@@ -2624,6 +2653,7 @@ void SlotPaddleBoxDataFeed::LoadIntoMemoryByLib(void) {
 
     SlotRecordPool().get(&record_vec, max_fetch_num);
     from_pool_num = GetTotalFeaNum(record_vec, max_fetch_num);
+    //printf("start LoadIntoMemory\n");
     auto func = [this, &parser, &record_vec, &offset, &max_fetch_num,
                  &from_pool_num, &filename](const std::string& line) {
       int old_offset = offset;
@@ -2781,6 +2811,8 @@ static void parser_log_key(const std::string& log_key, uint64_t* search_id,
 
 bool SlotPaddleBoxDataFeed::ParseOneInstance(const std::string& line,
                                              SlotRecord* ins) {
+
+  printf("begin ParseOneInstance\n");
   SlotRecord& rec = (*ins);
   // parse line
   const char* str = line.c_str();
@@ -2887,6 +2919,7 @@ bool SlotPaddleBoxDataFeed::ParseOneInstance(const std::string& line,
                                               float_total_slot_num);
   rec->slot_uint64_feasigns_.add_slot_feasigns(slot_uint64_feasigns,
                                                uint64_total_slot_num);
+  printf("end ParseOneInstance\n");
 
   return (uint64_total_slot_num > 0);
 }
@@ -2907,6 +2940,7 @@ void SlotPaddleBoxDataFeedWithGpuReplicaCache::LoadIntoMemoryByLib(void) {
   while (this->PickOneFile(&filename)) {
     VLOG(3) << "PickOneFile, filename=" << filename
             << ", thread_id=" << thread_id_;
+    printf("PickOneFile, filename=%s\n", filename.c_str());
     std::vector<SlotRecord> record_vec;
     platform::Timer timeline;
     timeline.Start();
@@ -3252,7 +3286,8 @@ void MiniBatchGpuPack::reset(const paddle::platform::Place& place) {
   trans_timer_.Reset();
 }
 
-void MiniBatchGpuPack::pack_pvinstance(const SlotPvInstance* pv_ins, int num) {
+void MiniBatchGpuPack::pack_pvinstance(const SlotPvInstance* pv_ins, int num, int click_pos) {
+  //VLOG(0) << "AAAAAAAAAAAAA begin pack pvinstance";
   pv_num_ = num;
   buf_.h_ad_offset.resize(num + 1);
   buf_.h_ad_offset[0] = 0;
@@ -3269,12 +3304,13 @@ void MiniBatchGpuPack::pack_pvinstance(const SlotPvInstance* pv_ins, int num) {
   }
   buf_.h_rank.resize(ins_number);
   buf_.h_cmatch.resize(ins_number);
+  buf_.h_ad_click.resize(ins_number);
   enable_pv_ = true;
 
-  pack_instance(&ins_vec_[0], ins_number);
+  pack_instance(&ins_vec_[0], ins_number, click_pos);
 }
 
-void MiniBatchGpuPack::pack_all_data(const SlotRecord* ins_vec, int num) {
+void MiniBatchGpuPack::pack_all_data(const SlotRecord* ins_vec, int num, int click_pos) {
   int uint64_total_num = 0;
   int float_total_num = 0;
 
@@ -3293,6 +3329,9 @@ void MiniBatchGpuPack::pack_all_data(const SlotRecord* ins_vec, int num) {
 
       buf_.h_rank[i] = r->rank;
       buf_.h_cmatch[i] = r->cmatch;
+      size_t fea_num = 0;
+      buf_.h_ad_click[i] = r->slot_uint64_feasigns_.get_values(click_pos, &fea_num)[0];
+      //VLOG(0) << "AAAAAAAAAAA " << buf_.h_ad_click[i];
     }
   } else {
     for (int i = 0; i < num; ++i) {
@@ -3441,14 +3480,15 @@ void MiniBatchGpuPack::pack_float_data(const SlotRecord* ins_vec, int num) {
       << "float value length error";
 }
 
-void MiniBatchGpuPack::pack_instance(const SlotRecord* ins_vec, int num) {
+void MiniBatchGpuPack::pack_instance(const SlotRecord* ins_vec, int num, int click_pos) {
   pack_timer_.Resume();
   ins_num_ = num;
   batch_ins_ = ins_vec;
   CHECK(used_uint64_num_ > 0 || used_float_num_ > 0);
   // uint64 and float
   if (used_uint64_num_ > 0 && used_float_num_ > 0) {
-    pack_all_data(ins_vec, num);
+    //VLOG(0) << "AAAAAAAAAAA pack instance";
+    pack_all_data(ins_vec, num, click_pos);
   } else if (used_uint64_num_ > 0) {  // uint64
     pack_uint64_data(ins_vec, num);
   } else {  // only float
@@ -3463,6 +3503,7 @@ void MiniBatchGpuPack::transfer_to_gpu(void) {
   trans_timer_.Resume();
   if (enable_pv_) {
     copy_host2device(&value_.d_ad_offset, buf_.h_ad_offset);
+    copy_host2device(&value_.d_ad_click, buf_.h_ad_click);
     copy_host2device(&value_.d_rank, buf_.h_rank);
     copy_host2device(&value_.d_cmatch, buf_.h_cmatch);
   }

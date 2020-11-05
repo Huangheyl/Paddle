@@ -43,6 +43,7 @@ template <typename T>
 class FilterByInstagKernel : public framework::OpKernel<T> {
  public:
   void Compute(const framework::ExecutionContext& context) const override {
+    //LOG(ERROR) << "begin compute";
     // X1 is global FC output
     // Dim [batch size, embedding size]
     auto* x1 = context.Input<LoDTensor>("Ins");
@@ -62,10 +63,20 @@ class FilterByInstagKernel : public framework::OpKernel<T> {
       filter_tag.insert(x3_data[i]);
     }
 
+    //LOG(ERROR) << "AAAAAAAAAAAA:" << filter_tag.size();
     // expected auto = const int64_t
     auto* x2_data = x2->data<int64_t>();
     // e.g get [0, 1, 2, 3, ...]
-    auto x2_lods = x2->lod()[0];
+    //auto x2_lods = x2->lod()[0];
+    Vector<size_t> x2_lods(1, 0);
+    for (int i = 0; i < x2->dims()[0]; i++) {
+      x2_lods.push_back(i + 1);
+    }
+    
+
+
+
+
     Vector<size_t> x1_lods(1, 0);
     if (!is_x1_lod) {
       for (int i = 0; i < x1->dims()[0]; i++) {

@@ -61,7 +61,7 @@ class BasicAucCalculator {
   void add_unlock_data(double pred, int label);
   // add batch data
   void add_data(const float* d_pred, const int64_t* d_label, int batch_size,
-                const paddle::platform::Place& place);
+                const paddle::platform::Place& place, bool copy_gpu=true);
   // add mask data
   void add_mask_data(const float* d_pred, const int64_t* d_label,
                      const int64_t* d_mask, int batch_size,
@@ -509,14 +509,21 @@ class BoxWrapper {
       const int64_t* label_data = NULL;
       int pred_len = 0;
       const float* pred_data = NULL;
+      bool cp = true;
+      std::string::size_type idx = label_varname_.find("pair_label");
+      if (idx != std::string::npos) {
+        cp = false;
+      }
+ 
       get_data<int64_t>(exe_scope, label_varname_, &label_data, &label_len);
       get_data<float>(exe_scope, pred_varname_, &pred_data, &pred_len);
       PADDLE_ENFORCE_EQ(label_len, pred_len,
                         platform::errors::PreconditionNotMet(
                             "the predict data length should be consistent with "
                             "the label data length"));
-      calculator->add_data(pred_data, label_data, label_len, place);
+      calculator->add_data(pred_data, label_data, label_len, place, cp);
     }
+
     template <class T = float>
     static void get_data(const Scope* exe_scope, const std::string& varname,
                          const T** data, int* len) {
@@ -525,9 +532,25 @@ class BoxWrapper {
           var, platform::errors::NotFound(
                    "Error: var %s is not found in scope.", varname.c_str()));
       auto& gpu_tensor = var->Get<LoDTensor>();
-      *data = gpu_tensor.data<T>();
-      *len = gpu_tensor.numel();
+       
+     // T* tmp = gpu_tensor.data<T>();
+     // *len = gpu_tensor.numel();
+
+     // string::size_type idx = varname.find("pair_label");
+     // if (idx != string::npos) {
+
+         
+      //  cudaMemcpy(*data, tmp, sizeof(T) * len,
+      //           cudaMemcpyHostToDevice);
+     // } else {
+        *data = gpu_tensor.data<T>();
+        *len = gpu_tensor.numel();
+      //}
     }
+
+
+
+
     template <class T = float>
     static void get_data(const Scope* exe_scope, const std::string& varname,
                          std::vector<T>* data) {
